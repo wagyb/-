@@ -1,0 +1,523 @@
+/*=========================================================================
+
+  Program:   Visualization Toolkit
+  Module:    Skull puncture
+        
+        contributors :，，，，，，，，yb w ,
+     date : 23.3.21;
+     Quite a challenging question After BIinn Phone  Because it's learning 
+     engineering ,trush code will left
+
+=========================================================================*/
+
+#include <vtkSphereSource.h>
+#include <vtkConeSource.h>
+#include <vtkLineSource.h>
+#include <vtkArrowSource.h>
+//modle
+#include <iostream>
+#include <vtkSmartPointer.h>
+#include <vtkActor.h>
+#include <vtkRenderer.h>
+#include <vtkRenderWindow.h>
+#include <vtkPolyDataMapper.h>
+#include <vtkMapper.h>
+#include <vtkRenderWindowInteractor.h>
+//常用详细类
+#include <vtkSTLReader.h>
+#include <vtkProperty.h>
+#include "vtkPointData.h"
+#include <vtkPoints.h>
+//触发接口类
+#include <vtkInteractorStyleTrackballCamera.h>
+#include <vtkInteractorStyleTrackballActor.h>
+#include <vtkRendererCollection.h>
+#include <vtkAutoInit.h>
+//法线可见点poly变换
+#include <vtkPolyDataNormals.h>
+#include <vtkSelectVisiblePoints.h>
+#include <vtkPropPicker.h>
+#include <vtkTransform.h>
+#include <vtkCylinderSource.h>
+#include <vtkSelectEnclosedPoints.h>
+//algorithm
+#include <vtkDijkstraGraphGeodesicPath.h>
+#include <vtkTransformPolyDataFilter.h>
+#include <vtkLight.h>
+#include <vtkCellData.h>
+#include <vtkPolygon.h>
+#include <vtkOBBTree.h>
+#include <vtkVertex.h>
+#include <vtkDoubleArray.h>
+#include <vtkVertexGlyphFilter.h>
+#include <vtkPolyDataAlgorithm.h>
+
+VTK_MODULE_INIT(vtkRenderingOpenGL2);
+VTK_MODULE_INIT(vtkInteractionStyle);
+bool move1 = true;         //a: 移动actor    polydata：skin    polydata1：skull
+vtkActor* a = nullptr;
+vtkPolyData *polydata;
+vtkPolyData *polydata1;
+
+//@param origin和target都是三元素的一维数组double[3]，length决定可视化向量的长度**别人写的箭头生成器之前传参写错了不知是否有用
+vtkPolyData* CreateSingleVectorArrowData(double* origin, double* target, double length)
+{
+    vtkMath* math;
+    math->Subtract(target, origin, target); //计算向量的朝向 target=target-origin
+
+    vtkPoints* points = vtkPoints::New();  //记录起点坐标
+    points->InsertNextPoint(origin);
+
+    vtkVertex* vertex = vtkVertex::New();  //建立起点的拓扑(不建立拓扑的话是不行的)
+    vertex->GetPointIds()->SetNumberOfIds(points->GetNumberOfPoints());
+    for (int i = 0; i < points->GetNumberOfPoints(); i++) {
+        vertex->GetPointIds()->SetId(i, i); //setId(拓扑的id, 顶点的id)
+    }
+
+    vtkDoubleArray* normals = vtkDoubleArray::New();  //创建法向量属性，存入向量的朝向target
+    normals->SetNumberOfComponents(3);
+    normals->InsertNextTuple(target);
+
+    vtkDoubleArray* scalars = vtkDoubleArray::New();  //创建标量属性，存入向量的长度length
+    scalars->SetNumberOfComponents(1);
+    scalars->SetName("scalars");
+    scalars->InsertNextTuple1(length);
+
+    vtkSmartPointer<vtkCellArray> vertices =
+        vtkSmartPointer<vtkCellArray>::New();
+    vertices->InsertNextCell(vertex);	//将建立的拓扑用vtkCellArray封装，用于赋予vtkPolyData
+
+    vtkPolyData* polydataA = vtkPolyData::New();  //创建几何实体
+    polydataA->SetPoints(points);	//赋予起点
+    polydataA->SetVerts(vertices);	//赋予拓扑
+    polydataA->GetPointData()->SetNormals(normals);	//赋予向量朝向 
+    polydataA->GetPointData()->SetScalars(scalars);	//赋予向量长度
+    return polydataA;
+}
+
+//using namespace std;
+class pointpickintera : public vtkInteractorStyleTrackballCamera
+{
+public:
+    static pointpickintera* New();
+    vtkTypeMacro(pointpickintera, vtkInteractorStyleTrackballCamera);
+
+   
+
+    virtual void OnLeftButtonDown() override //左键重写取位置并生成小球，确定移动后生成
+    {
+
+
+        int* clickPos = this->GetInteractor()->GetEventPosition();
+
+        // Pick from this location.
+        vtkSmartPointer<vtkPropPicker>  picker =
+            vtkSmartPointer<vtkPropPicker>::New();
+        picker->Pick(clickPos[0], clickPos[1], 0, this->GetDefaultRenderer());
+
+        double* pos = picker->GetPickPosition();
+        std::cout << "Pick position (world coordinates) is: "
+            << pos[0] << " " << pos[1]
+            << " " << pos[2] << std::endl;
+
+        std::cout << "Picked actor: " << picker->GetActor() << std::endl;
+        //Create a sphere
+        vtkSmartPointer<vtkSphereSource> sphereSource =
+            vtkSmartPointer<vtkSphereSource>::New();
+        sphereSource->SetCenter(pos[0]+1.5, pos[1], pos[2]);
+        sphereSource->SetRadius(0.1);
+
+        //Create a mapper and actor
+        vtkSmartPointer<vtkPolyDataMapper> mapper =
+            vtkSmartPointer<vtkPolyDataMapper>::New();
+        mapper->SetInputConnection(sphereSource->GetOutputPort());
+
+        vtkSmartPointer<vtkActor> actor =
+            vtkSmartPointer<vtkActor>::New();
+        actor->SetMapper(mapper);
+        if (a == picker->GetActor())
+        {
+            move1 = true;
+            return;
+        }
+
+        //this->GetInteractor()->GetRenderWindow()->GetRenderers()->GetDefaultRenderer()->AddActor(actor);
+        this->GetDefaultRenderer()->AddActor(actor);
+        // Forward events
+        vtkInteractorStyleTrackballCamera::OnLeftButtonDown();
+
+
+        //vtkSmartPointer<vtkSelectVisiblePoints>
+    }
+
+    virtual void OnMouseMove()    //虽然没用但是写了的移动光照和碰撞检测
+    {
+        vtkRenderWindowInteractor* rwi = this->Interactor;
+        if (move1 == true)
+        {
+            double* obj_center = a->GetCenter();
+            double disp_obj_center[3], new_pick_point[4];
+            double old_pick_point[4], motion_vector[3];
+            this->ComputeWorldToDisplay(obj_center[0], obj_center[1], obj_center[2],
+                disp_obj_center);
+
+            this->ComputeDisplayToWorld(rwi->GetEventPosition()[0],
+                rwi->GetEventPosition()[1],
+                disp_obj_center[2],
+                new_pick_point);
+
+            this->ComputeDisplayToWorld(rwi->GetLastEventPosition()[0],
+                rwi->GetLastEventPosition()[1],
+                disp_obj_center[2],
+                old_pick_point);
+
+            motion_vector[0] = new_pick_point[0] - old_pick_point[0];
+            motion_vector[1] = new_pick_point[1] - old_pick_point[1];
+            motion_vector[2] = new_pick_point[2] - old_pick_point[2];
+
+            //vtkSmartPointer<vtkPolyData> points = vtkSmartPointer<vtkPolyData>::New();
+            //points = polydata;
+           
+         
+           printf("%f , %f ,  %f \n",a->GetPosition()[0], a->GetPosition()[1], a->GetPosition()[2]);
+            vtkSmartPointer<vtkPolyData> pile = vtkSmartPointer<vtkPolyData>::New();
+            vtkNew<vtkPoints> points1;
+            //vtkNew<vtkCellArray> polys;
+            //polys->InsertNextCell(1);
+            double e[3] = {a->GetPosition()[0]+15, a->GetPosition()[1], a->GetPosition()[2]};
+            double e1[3] = { a->GetPosition()[0] + 15, a->GetPosition()[1]+1, a->GetPosition()[2]};
+            double e2[3] = { a->GetPosition()[0] + 15, a->GetPosition()[1]-0.5, a->GetPosition()[2]+ 0.5 * sqrt(3) };
+            double e3[3] = { a->GetPosition()[0] + 15, a->GetPosition()[1]-0.5, a->GetPosition()[2]- 0.5 * sqrt(3) };
+            points1->InsertPoint(1,e);
+            points1->InsertPoint(2, e1);
+            points1->InsertPoint(3, e2);
+            points1->InsertPoint(4, e3);
+
+            //polys->InsertCellPoint(1);
+            //pile->SetVerts(polys);
+            pile->SetPoints(points1);
+            //pile->GetPoints()->Print(std::cout);
+           // pile->Print(std::cout);
+            /*if (polyrum)
+            {
+                printf("polyrum exest");
+            }*/
+            //printf("%d", polyrum->GetNumberOfPoints());
+            vtkSmartPointer<vtkSelectEnclosedPoints> selectEnclosedPoints = vtkSmartPointer<vtkSelectEnclosedPoints>::New();//碰撞检测：在polydata中检测是否会出现pile的点当鼠标移动的时候
+            selectEnclosedPoints->SetInputData(pile);
+            selectEnclosedPoints->SetSurfaceData(polydata);
+            selectEnclosedPoints->SetTolerance(0.00001);
+            selectEnclosedPoints->Update();
+
+
+            bool inside = false;
+            for (int i = 0; i < pile->GetNumberOfPoints(); ++i)
+            {
+                if (selectEnclosedPoints->IsInside(i) == 1)
+                {
+                    //发生碰撞
+                    inside = true;
+                    printf("boom\n");
+                    //break;
+                }
+            }
+
+            //vtkSmartPointer<vtkLight> light =
+            //    vtkSmartPointer<vtkLight>::New();
+            //light->SetPosition(a->GetPosition());            //垃圾光照 
+            //light->SetColor(0, 1, 0);
+            //this->GetDefaultRenderer()->RemoveAllLights();
+            //this->GetDefaultRenderer()->AddLight(light);
+            if (a->GetUserMatrix() != NULL)
+            {
+                vtkTransform* t = vtkTransform::New();
+                t->PostMultiply();
+                t->SetMatrix(a->GetUserMatrix());
+                t->Translate(motion_vector[0], motion_vector[1], motion_vector[2]);
+                a->GetUserMatrix()->DeepCopy(t->GetMatrix());
+                t->Delete();
+            }
+            else
+            {
+                a->AddPosition(motion_vector[0],
+                    motion_vector[1],
+                    motion_vector[2]);
+            }
+            
+            rwi->Render();
+        }
+        vtkInteractorStyleTrackballCamera::OnMouseMove();
+    }
+    virtual void OnLeftButtonUp()
+    {
+        move1 = false;
+        vtkInteractorStyleTrackballCamera::OnLeftButtonUp();
+    }
+
+};
+    vtkStandardNewMacro(pointpickintera);
+
+    int main()
+    {
+
+
+        vtkSmartPointer<vtkSTLReader> planeSource = vtkSmartPointer<vtkSTLReader>::New();   //polyskin
+        planeSource->SetFileName("C:/Users/111/Desktop/skin.stl");
+        planeSource->Update();
+       
+        
+        // Create a polydata object
+        polydata = vtkSmartPointer<vtkPolyData>::New();
+        polydata = planeSource->GetOutput();
+        
+
+        // Create a mapper
+        vtkSmartPointer<vtkPolyDataMapper> mapper =
+            vtkSmartPointer<vtkPolyDataMapper>::New();
+
+#if VTK_MAJOR_VERSION <= 5
+        mapper->SetInput(polydata);
+#else
+        mapper->SetInputData(polydata);
+#endif
+
+        // Create an actor
+        vtkSmartPointer<vtkActor> actor =
+            vtkSmartPointer<vtkActor>::New();
+        actor->SetMapper(mapper);
+        actor->GetProperty()->SetOpacity(0.2);
+
+
+        std::cout << "Actor address: " << actor << std::endl;
+        vtkSmartPointer<vtkSTLReader> planeSource1 =
+            vtkSmartPointer<vtkSTLReader>::New();
+        planeSource1->SetFileName("C:/Users/111/Desktop/halftone.stl");     //polyskull
+        planeSource->Update();
+        planeSource1->Update();
+        // Create a polydata object
+        polydata1 = planeSource1->GetOutput();
+
+        
+
+
+            
+        // Create a mapper
+        vtkSmartPointer<vtkPolyDataMapper> mapper1 =
+            vtkSmartPointer<vtkPolyDataMapper>::New();
+
+#if VTK_MAJOR_VERSION <= 5
+        mapper->SetInput(polydata);
+#else
+        mapper1->SetInputData(polydata1);
+        
+#endif
+        double nerl[3] = { 13.4736,85.9540 , 326.69299 };    //用碰撞测出来的位置
+
+
+
+
+        // Create an actor
+        vtkSmartPointer<vtkActor> actor1 =
+            vtkSmartPointer<vtkActor>::New();
+        actor1->SetMapper(mapper1);
+        //actor1->GetProperty()->SetOpacity(0);
+        
+        vtkSmartPointer<vtkSphereSource> nerlSource =
+            vtkSmartPointer<vtkSphereSource>::New();
+
+        nerlSource->SetRadius(1);
+
+
+        //Create a mapper and actor
+        vtkSmartPointer<vtkPolyDataMapper> nerlmapper =
+            vtkSmartPointer<vtkPolyDataMapper>::New();
+        nerlmapper->SetInputConnection(nerlSource->GetOutputPort());
+
+        vtkSmartPointer<vtkActor> nerlactor =
+            vtkSmartPointer<vtkActor>::New();
+        nerlactor->SetMapper(nerlmapper);
+        nerlactor->GetProperty()->SetColor(1, 0, 0);
+        nerlactor->AddPosition(nerl);
+       
+
+        
+       
+        
+        
+
+
+
+        a = nerlactor;
+        std::cout << "Actor1 address: " << actor1 << std::endl;
+        std::cout << "a address: " << a << std::endl;
+        // A renderer and render window
+        vtkSmartPointer<vtkRenderer> renderer =
+            vtkSmartPointer<vtkRenderer>::New();
+        vtkSmartPointer<vtkRenderWindow> renderWindow =
+            vtkSmartPointer<vtkRenderWindow>::New();
+        renderWindow->AddRenderer(renderer);
+
+   
+        vtkNew<vtkOBBTree> tree;
+        tree->SetDataSet(planeSource1->GetOutput());  //重复位置检测
+        tree->BuildLocator();
+        
+
+        double t; // Parametric coordinate of intersection (0 (corresponding to p1) to 1 (corresponding to p2))
+        double x[3]; // The coordinate of the intersection
+        double pcoords[3];
+        int subId;
+        printf("%f", polydata->GetNumberOfPoints());
+        //ofstream outfile;	// 定义写文件流之前报错了但能用
+        //outfile.open("points.txt", ios::out | ios::ate);
+    
+       
+     
+
+
+        vtkIdType pts[4][3] =     // 生成封闭三棱锥里边的值是点的序号
+        {
+            {0,1,2},{0,2,3},{0,1,3},
+            {1,2,3}
+        };
+
+
+
+        for (int i = 0; i < polydata->GetNumberOfPoints(); i+=1000)  //遍历点
+        {
+            double p[3];
+            p[0] = polydata->GetPoint(i)[0];
+            p[1] = polydata->GetPoint(i)[1];
+            p[2] = polydata->GetPoint(i)[2];
+            if (!tree->IntersectWithLine(p,nerl,0.001,t,x,pcoords, subId)) //t,x,pcoords,subld 会被赋值大致为线与平面的交集的属性，用看文档本身值为bool
+            {
+                vtkSmartPointer<vtkLineSource> LineSource =
+                    vtkSmartPointer<vtkLineSource>::New();
+                LineSource->SetPoint1(p);
+                LineSource->SetPoint2(nerl);
+                //Create a mapper and actor
+                vtkSmartPointer<vtkPolyDataMapper> mapper2 =
+                    vtkSmartPointer<vtkPolyDataMapper>::New();
+                mapper2->SetInputConnection(LineSource->GetOutputPort());
+                vtkSmartPointer<vtkActor> actor2 =
+                    vtkSmartPointer<vtkActor>::New();
+                actor2->SetMapper(mapper2);
+             
+                    actor2->GetProperty()->SetColor(1, 0, 0);
+                
+                    vtkSmartPointer<vtkPoints> checkpos =
+                        vtkSmartPointer<vtkPoints>::New();
+                    
+                   
+                    checkpos->InsertPoint(0, polydata->GetPoint(i ));
+                    checkpos->InsertPoint(1, polydata->GetPoint(i + 1));
+                    checkpos->InsertPoint(2, polydata->GetPoint(i + 2));
+                    checkpos->InsertPoint(3, polydata->GetPoint(i + 3));//在points中导入4个点，注意标号
+                   
+                   // printf("points:%f", polydata->GetPoint(i )[0]);
+                   // printf("points:%f", polydata->GetPoint(i + 1)[0]);
+                    vtkSmartPointer<vtkPolyData> skinpointpoly = vtkSmartPointer<vtkPolyData>::New();
+                    vtkSmartPointer<vtkCellArray> polys = vtkSmartPointer<vtkCellArray>::New();
+                    
+                    for (size_t j = 0; j < 4; j++)
+                    {
+                        polys->InsertNextCell(3,pts[j]); //构建封闭形体
+                    }
+                    skinpointpoly->SetPoints(checkpos);
+                    skinpointpoly->SetStrips(polys);
+                    
+        /*            vtkSmartPointer<vtkPolyDataMapper> test =
+                        vtkSmartPointer<vtkPolyDataMapper>::New();  //此段可以查看构建的形体形状
+                    test->SetInputData(skinpointpoly);
+                    vtkSmartPointer<vtkActor> actortest =
+                        vtkSmartPointer<vtkActor>::New();
+                    actortest->SetMapper(test);*/
+
+                    vtkSmartPointer<vtkPolyDataNormals> skinpointnormal = vtkSmartPointer<vtkPolyDataNormals>::New();//法线提取注：没有对点法线的提取所谓点Normals,既点所参与的构建的面的法线进入此类后点会失去ID
+                    skinpointnormal->SetInputData(skinpointpoly);
+                    skinpointnormal->ComputeCellNormalsOn();
+                    skinpointnormal->Update();
+                    //skinpointnormal->Print(std::cout);
+
+                    vtkDataArray* ptNormals = skinpointnormal->GetOutput()->GetCellData()->GetNormals();
+            
+                        double force[3] = { 0, 0, 0};
+                        //cout << "For points in every cell: \n";
+                        //cout << ptNormals->GetNumberOfTuples() << endl;
+                        for (int f = 0; f < ptNormals->GetNumberOfTuples(); f++)
+                        {
+                            double value[3];
+                            ptNormals->GetTuple(f, value);
+                            force[0] += abs(value[0]); //此处为争议点：1：生成的形体大多为表面深度排布， 2：单纯对向量abs是否反应此处模型的真实法线 3：四边形是否会产生相应的图形学问题
+                            force[1] += abs(value[1]);
+                            force[2] += abs(value[2]);
+                           //printf( "Value: (%lf, %lf, %lf)\n", value[0], value[1], value[2] );
+                        }
+                       // printf("Value: (%lf, %lf, %lf)\n", force[0], force[1], force[2]);
+                       /* double s = sqrt(pow(force[0], 2) + pow(force[1], 2) + pow(force[2], 2));//单位化
+                        force[0] /= s;
+                        force[1] /= s;
+                        force[2] /= s;*/
+                        printf("Value: (%lf, %lf, %lf)\n", force[0], force[1], force[2]);
+                        force[0] += p[0] ;
+                        force[1] += p[1] ;
+                        force[2] += p[2] ;
+                        //printf("Value: (%lf, %lf, %lf)\n", force[0], force[1], force[2]);
+                        vtkSmartPointer<vtkLineSource> ArrowSource =  // 生成新的绿线：：本来为箭头但是和一堆问题并发就改成了最简单的模式
+                            vtkSmartPointer<vtkLineSource>::New();
+                        ArrowSource->SetPoint1(p);
+                        ArrowSource->SetPoint2(force);
+                        vtkSmartPointer<vtkPolyDataMapper> Amapper =
+                            vtkSmartPointer<vtkPolyDataMapper>::New();
+                        Amapper->SetInputConnection(ArrowSource->GetOutputPort());
+                        vtkSmartPointer<vtkActor> ArrAct =
+                            vtkSmartPointer<vtkActor>::New();
+                        ArrAct->SetMapper(Amapper);
+                        ArrAct->GetProperty()->SetColor(0, 1, 0);
+                        renderer->AddActor(ArrAct);
+                    
+
+                    
+                //actor2->AddPosition(p);
+                renderer->AddActor(actor2);
+                //renderer->AddActor(actortest);
+                //printf("%f,%f,%f:\n", p[0], p[1], p[2]);
+                
+
+                // 打开文件
+                //outfile << p[0] << ":" << p[1] << ":" << p[2] << endl;
+            }
+           
+        }
+       // outfile.close();
+
+        // An interactor
+        vtkSmartPointer<vtkRenderWindowInteractor> renderWindowInteractor =
+            vtkSmartPointer<vtkRenderWindowInteractor>::New();
+        renderWindowInteractor->SetRenderWindow(renderWindow);
+
+
+
+        // Set the custom stype to use for interaction.
+        /*vtkSmartPointer<pointpickintera> style =
+            vtkSmartPointer<pointpickintera>::New();
+        style->SetDefaultRenderer(renderer);
+
+        renderWindowInteractor->SetInteractorStyle(style);*/
+
+        // Add the actors to the scene
+        
+        renderer->AddActor(actor);
+        renderer->AddActor(actor1);
+        renderer->AddActor(nerlactor);
+        
+        renderer->SetBackground(0, 0, 1);
+
+        // Render and interact
+        renderWindow->Render();
+        renderWindowInteractor->Initialize();
+        renderWindowInteractor->Start();
+
+        return EXIT_SUCCESS;
+
+    }
