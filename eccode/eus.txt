@@ -1,0 +1,960 @@
+#include <vtkSphereSource.h>
+#include <vtkConeSource.h>
+#include <vtkLineSource.h>
+#include <vtkArrowSource.h>
+//modle
+#include <iostream>
+#include <vtkSmartPointer.h>
+#include <vtkActor.h>
+#include <vtkRenderer.h>
+#include <vtkImageActor.h>
+#include <vtkRenderWindow.h>
+#include <vtkPolyDataMapper.h>
+#include <vtkMapper.h>
+#include <vtkRenderWindowInteractor.h>
+#include <vtkVolumeProperty.h>
+#include "vtkImageData.h"
+//常用详细类
+#include <vtkSTLReader.h>
+#include "vtkNIFTIImageReader.h"
+#include <vtkProperty.h>
+#include "vtkPointData.h"
+#include <vtkPoints.h>
+//触发接口类
+#include <vtkInteractorStyleTrackballCamera.h>
+#include <vtkInteractorStyleTrackballActor.h>
+#include <vtkRendererCollection.h>
+#include <vtkAutoInit.h>
+//法线可见点poly变换
+#include <vtkPolyDataNormals.h>
+#include <vtkSelectVisiblePoints.h>
+#include <vtkPropPicker.h>
+#include <vtkTransform.h>
+#include <vtkCylinderSource.h>
+#include <vtkSelectEnclosedPoints.h>
+//algorithm
+#include <vtkDijkstraGraphGeodesicPath.h>
+#include <vtkTransformPolyDataFilter.h>
+#include <vtkLight.h>
+#include <vtkCellData.h>
+#include <vtkPolygon.h>
+#include <vtkOBBTree.h>
+#include <vtkVertex.h>
+#include <vtkDoubleArray.h>
+#include <vtkVertexGlyphFilter.h>
+#include <vtkPolyDataAlgorithm.h>
+#include "vtkImageGaussianSmooth.h"
+#include "vtkFixedPointVolumeRayCastMIPHelper.h"
+#include "vtkGPUVolumeRayCastMapper.h"
+#include "vtkPiecewiseFunction.h"
+#include "vtkColorTransferFunction.h"
+//面绘管线
+#include "vtkMarchingCubes.h"
+#include "vtkStripper.h"
+#include "vtkDecimatePro.h"
+#include "vtkSmoothPolyDataFilter.h"
+#include "vtkPolyDataConnectivityFilter.h"
+//裁剪模式
+#include  "vtkBooleanOperationPolyDataFilter.h"
+#include "vtkImageThreshold.h"
+#include <vtkPointLocator.h>
+//医学图像后处理
+#include "vtkImageReslice.h"
+#include "vtkImageShiftScale.h"
+vtkSmartPointer<vtkNIFTIImageReader> reader = vtkSmartPointer<vtkNIFTIImageReader>::New();
+vtkSmartPointer<vtkNIFTIImageReader> reader1 = vtkSmartPointer<vtkNIFTIImageReader>::New();
+vtkSmartPointer<vtkImageActor> reslice = vtkSmartPointer<vtkImageActor>::New();
+vtkSmartPointer<vtkImageReslice> imageReslice = vtkSmartPointer<vtkImageReslice>::New();
+#define M_PI       3.14159265358979323846
+vtkSmartPointer<vtkPoints> RemoveDuplicates(vtkSmartPointer<vtkPoints> points1,
+	vtkSmartPointer<vtkPoints> points2)
+{
+	vtkSmartPointer<vtkPoints> newPoints = vtkSmartPointer<vtkPoints>::New();
+	vtkSmartPointer<vtkPoints> newPoints1 = vtkSmartPointer<vtkPoints>::New();
+	// 将第一个 vtkPoints 中的点插入到新的 vtkPoints 中
+	for (vtkIdType i = 0; i < points1->GetNumberOfPoints(); i++)
+	{
+		double point[3];
+		points1->GetPoint(i, point);
+		newPoints->InsertNextPoint(point);
+	}
+	vtkSmartPointer<vtkPolyData> polydata = vtkSmartPointer<vtkPolyData>::New();
+	polydata->SetPoints(newPoints);
+	// 通过 vtkPointLocator 来检查第二个 vtkPoints 中的点是否与第一个 vtkPoints 中的点重复
+	vtkSmartPointer<vtkPointLocator> pointLocator = vtkSmartPointer<vtkPointLocator>::New();
+	pointLocator->SetDataSet(polydata);
+	pointLocator->BuildLocator();
+	for (vtkIdType i = 0; i < points2->GetNumberOfPoints(); i++)
+	{
+		double point[3];
+		points2->GetPoint(i, point);
+		vtkIdType id = pointLocator->FindClosestPoint(point);
+		double closestPoint[3];
+		newPoints->GetPoint(id, closestPoint);
+
+		if (vtkMath::Distance2BetweenPoints(point, closestPoint) > 1e-3)
+		{
+			// 如果不重复，则将该点插入到新的 vtkPoints 中
+			newPoints1->InsertNextPoint(point);
+		}
+	}
+
+	return newPoints1;
+}
+
+void initImageActor(double* Matrix, double* center, double dis)
+{
+	vtkMatrix4x4* AxialResliceMatrix = vtkMatrix4x4::New();
+	AxialResliceMatrix->DeepCopy(Matrix);
+
+	AxialResliceMatrix->SetElement(0, 3, center[0]);
+	AxialResliceMatrix->SetElement(1, 3, center[1]);
+	AxialResliceMatrix->SetElement(2, 3, center[2]);
+
+	//设置体数据来源
+	imageReslice->SetInputConnection(reader->GetOutputPort());
+	//设置输出是一个切片，而不是一个卷
+	imageReslice->SetOutputDimensionality(2);
+	//pImageResliceX->SetResliceAxesDirectionCosines(sagittalX, sagittalY, sagittalZ);
+	//设置vtkImageReslice的切面坐标系矩阵
+	imageReslice->SetResliceAxes(AxialResliceMatrix);
+	//pImageResliceX->SetResliceAxesOrigin(center);
+	//设置切面算法的插值方式为线性插值
+	imageReslice->SetInterpolationModeToLinear();
+	imageReslice->Update();
+	reslice->SetInputData(imageReslice->GetOutput());
+	//pImageMapToColorsX->SetLookupTable(pWindowLevelLookupTable);
+	//pImageMapToColorsX->SetInputConnection(pImageResliceX->GetOutputPort());
+	vtkSmartPointer<vtkImageShiftScale> shiftScaleFilter = vtkSmartPointer<vtkImageShiftScale>::New();
+
+	double* range = reslice->GetInput()->GetScalarRange();
+
+	// 设置输出图像的数据类型为unsigned char
+	shiftScaleFilter->SetOutputScalarTypeToUnsignedChar();
+
+	// 将输入图像的像素值从[range[0],range[1]]范围内映射到[0,255]范围内
+	shiftScaleFilter->SetInputData(reslice->GetInput());
+	shiftScaleFilter->SetShift(-range[0]);
+	shiftScaleFilter->SetScale(255.0 / (range[1] - range[0]));
+
+	// 更新输出图像
+	shiftScaleFilter->Update();
+
+	// 将过滤器输出设置为 imageActor 的数据
+	reslice->SetInputData(shiftScaleFilter->GetOutput());
+
+	reslice->SetPosition(center[0], center[1], center[2]);
+	reslice->RotateX((atan(Matrix[0] / Matrix[1]) / M_PI) * -180);
+	reslice->RotateY((atan(Matrix[1] / Matrix[0]) / M_PI) * -180);
+	reslice->RotateZ((asin(Matrix[2]) / M_PI) * -180);
+
+	reslice->Update();
+}
+
+#include <string>
+
+
+
+//pcl
+
+#include <pcl/surface/organized_fast_mesh.h>
+#include <pcl/surface/gp3.h>
+#include <pcl/features/normal_3d_omp.h>
+#include <pcl/visualization/pcl_visualizer.h>
+#include <pcl/filters/passthrough.h>
+#include <pcl/filters/voxel_grid.h>
+#include <pcl/segmentation/extract_clusters.h>
+#include <pcl/io/pcd_io.h>
+#include <pcl/kdtree/kdtree_flann.h>
+#include <pcl/point_types.h>
+#include <pcl/point_cloud.h>
+#include <pcl/filters/filter.h>
+#include <pcl/visualization/cloud_viewer.h>
+#include <pcl/surface/mls.h>
+#include <pcl/features/normal_3d.h>
+#include <pcl/segmentation/organized_multi_plane_segmentation.h>
+#include <pcl/segmentation/region_growing_rgb.h>
+#include <pcl/surface/poisson.h>
+#include <pcl/common/common.h>
+#include <pcl/sample_consensus/method_types.h>
+#include <pcl/sample_consensus/model_types.h>
+#include <fstream>
+#include <vector>
+#include <queue>
+#include <algorithm>
+using namespace std;
+
+//计算两点之间的距离用作初始边的权重
+float p2pdis(pcl::PointXYZRGB a, pcl::PointXYZRGB b)
+{
+
+	return sqrt((a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y) + (a.z - b.z) * (a.z - b.z));
+
+
+}
+//定义边的结构
+typedef struct edge {
+	int initial;
+	int end;
+	float weight;
+	edge(int a, int b, float c) {
+		initial = a;
+		end = b;
+		weight = c;
+	}
+};
+vector<edge> edges;//定义无向加权图，并初始化
+
+//根据权重的大小对边排序
+bool cmp(edge a, edge b)
+{
+	return  a.weight < b.weight;
+}
+
+vector<int> mst(pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloudT, int ki, int kj)
+{
+	//输入的需要搜索路径的两个顶点索引
+
+	/*-------------------------------------------构建最小生成树------------------------------------------*/
+	//读取点云文件
+
+
+	int vexnum = cloudT->size();//顶点数量
+	long arcnum = vexnum * (vexnum - 1) / 2;//边数
+
+	for (int i = 0; i < vexnum; i++) {
+		for (int j = i + 1; j < vexnum; j++)
+		{
+			if (p2pdis(cloudT->points[i], cloudT->points[j]) > 10)
+			{
+				continue;
+			}
+			double d = p2pdis(cloudT->points[i], cloudT->points[j]);
+			edge a = edge(i, j, d);
+			edges.push_back(a);
+		}
+	}
+
+	//对边由小到大排序
+	sort(edges.begin(), edges.end(), cmp);
+	//定义每个点所属类别（初始每个点都不同），用于判断是否形成回路
+	vector<int> label(vexnum);
+	for (int i = 0; i < vexnum; i++)
+	{
+		label[i] = i;
+	}
+
+	//定义最小生成树
+	vector<edge> minTree;
+	//判断点是否已经加入最小生成树
+	vector<int> visited(vexnum, 0);
+
+	//对每个边循环
+	for (int i = 0; i < arcnum; i++)
+	{
+		int initial = edges[i].initial;
+		int end = edges[i].end;
+		//判断此边是否构成回路
+		if (label[initial] != label[end])
+		{
+			minTree.push_back(edges[i]);
+			//根据两端点是否被加入minTree来确定如何更改其label值
+			if (visited[initial] == 0)
+			{
+				label[initial] = label[end];
+			}
+			else
+			{
+				if (visited[end] == 0)
+					label[end] = label[initial];
+				else
+				{
+					int lab = label[end];
+					for (int j = 0; j < vexnum; j++)
+					{
+						if (label[j] == lab)
+						{
+							label[j] = label[initial];
+						}
+					}
+				}
+			}
+
+			visited[initial] = 1;
+			visited[end] = 1;
+		}
+		//满足条件时提前退出循环，可提升速度
+		if (minTree.size() == vexnum - 1)
+			break;
+	}
+
+	/*--------------------------------求出两顶点在最小生成树上的路径------------------------------------*/
+	//将minTree转换成如下形式	
+	vector<vector<int>> Edges(vexnum);
+	for (int i = 0; i < vexnum - 1; i++)
+	{
+		Edges[minTree[i].initial].push_back(minTree[i].end);
+		Edges[minTree[i].end].push_back(minTree[i].initial);
+	}
+
+	//以某点为根节点时，指向每个点的“父”结点索引，初始值为-1
+	vector<int> father(vexnum, -1);
+	//“跟”结点的“父”结点就是其本身
+	father[ki] = ki;
+	//判断每个点是否被访问过
+	vector<bool> visit(vexnum, false);
+	//定义队列，存储需要遍历的点
+	queue<int> queues;
+	queues.push(ki);
+
+	//以ki为根节点，类似于“宽度遍历”遍历所有点
+	while (!queues.empty())
+	{
+		int curr = queues.front();
+		queues.pop();
+
+		if (visit[curr] == true)
+			continue;
+		else {
+			if (curr == kj)
+				break;
+			visit[curr] = true;
+			//将该节点的“子”结点加入队列
+			for (int i = 0; i < Edges[curr].size(); i++) {
+				if (visit[Edges[curr][i]] == false)
+				{
+					father[Edges[curr][i]] = curr;
+					queues.push(Edges[curr][i]);
+				}
+			}
+		}
+	}
+	//最终路径，存储的是路径上点的索引
+	vector<int> path;
+	int t = kj;
+	//迭代寻找“父”结点以确定路径
+	while (t != ki) {
+		path.push_back(t);
+		t = father[t];
+	}
+	path.push_back(t);
+	//当需搜索路径的两点相等时，确保路径索引最少为两点
+	if (path.size() == 1)
+		path.push_back(t);
+
+	return path;
+}
+
+#define INF 0xcffffff
+
+
+int arcs[2000][2000];
+typedef struct AMGraph {							//定义图
+	int vex, arc;
+	//邻接矩阵
+};
+
+int dis[2000], path[2000];							//dis保存最短路径总权值、path通过保存路径的前驱结点来保存路径
+bool book[2000];										//已找到最短路集合
+
+void Dijkstra(AMGraph& G, int st)							//迪杰斯特拉算法
+{
+	for (int i = 1; i <= G.vex; i++)
+	{
+		dis[i] = arcs[st][i];						//初始化dis数组
+		path[i] = dis[i] < INF ? st : -1;			//初始化路径数组
+	}
+	book[st] = true;
+	dis[st] = 0;										//起点初始化
+	for (int i = st + 1; i <= G.vex; i++)				//遍历G.vex-1次
+	{
+		int mins = INF, u = 1;
+		for (int j = st; j <= G.vex; j++)			//找到当前没加入集合的最短路的后驱点
+		{
+			if (!book[j] && mins > dis[j])
+			{
+				mins = dis[j];
+				u = j;
+			}
+		}
+		book[u] = true;								//将该点加入集合
+		for (int j = st; j <= G.vex; j++)			//遍历所有其他点对其最短路进行更新（松弛操作）
+		{
+			if (!book[j] && dis[j] > dis[u] + arcs[u][j])
+			{
+				dis[j] = dis[u] + arcs[u][j];		//更新最短路径值
+				path[j] = u;						//修改j的前驱为u
+			}
+		}
+	}
+
+	for (int i = st; i > 0; i--)				//遍历G.vex-1次
+	{
+		int mins = INF, u = 1;
+		for (int j = st - 1; j > 0; j--)			//找到当前没加入集合的最短路的后驱点
+		{
+			if (!book[j] && mins > dis[j])
+			{
+				mins = dis[j];
+				u = j;
+			}
+		}
+		book[u] = true;								//将该点加入集合
+		for (int j = st - 1; j > 0; j--)			//遍历所有其他点对其最短路进行更新（松弛操作）
+		{
+			if (!book[j] && dis[j] > dis[u] + arcs[u][j])
+			{
+				dis[j] = dis[u] + arcs[u][j];		//更新最短路径值
+				path[j] = u;						//修改j的前驱为u
+			}
+		}
+	}
+
+}
+
+void find(int x)									//递归输出最短路径
+{
+	while (path[x] != -1)
+	{
+
+		cout << path[x] << "<-";
+		x = path[x];
+	}
+	cout << x;
+
+}
+
+void putin(pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloudT, AMGraph& G)								//输入图
+{
+	G.vex = cloudT->size();
+	G.arc = G.vex * (G.vex - 1) / 2;
+	for (int i = 1; i <= G.vex; i++)				//初始化邻接矩阵
+		for (int j = 1; j <= G.vex; j++)
+			arcs[i][j] = INF;
+
+	for (int i = 1; i <= G.vex; i++)
+	{
+		for (size_t j = i + 1; j < G.vex; j++)
+		{
+			if (p2pdis(cloudT->points[i], cloudT->points[j]) < 10)
+			{
+				arcs[i][j] = p2pdis(cloudT->points[i], cloudT->points[j]);
+				arcs[j][i] = arcs[i][j];
+			}
+		}
+	}
+}
+
+void putout(AMGraph& G)								//输出
+{
+	//cout << "起点 v1 到各点的最短路程为: \n";
+	for (int i = 1; i < G.vex; i++)
+	{
+		cout << dis[i] << " ";
+	}
+	cout << dis[G.vex] << endl;
+	/*for (int i = 2; i <= G.vex; i++)
+	{
+		cout << "起点 v1 到 v" << i << " 的路径为： ";
+		find(i);
+		cout << endl;
+	}*/
+}
+
+
+
+
+
+pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZRGB>);
+pcl::PointCloud<pcl::Normal>::Ptr normals(new pcl::PointCloud<pcl::Normal>);
+pcl::PointCloud<pcl::PointXYZRGB>::Ptr filtered_cloud(new pcl::PointCloud<pcl::PointXYZRGB>);
+
+pcl::PointCloud<pcl::PointXYZRGB>::Ptr vtkPointsToPcl(vtkSmartPointer<vtkPoints> vtkPoints1, vtkSmartPointer<vtkPoints> vtkPoints2)
+{
+	// Create PCL point cloud object
+	pcl::PointCloud<pcl::PointXYZRGB>::Ptr trans(new pcl::PointCloud<pcl::PointXYZRGB>);
+
+	// Traverse VTKPoints and add points to PCL point cloud
+	for (vtkIdType i = 0; i < vtkPoints1->GetNumberOfPoints(); i++)
+	{
+		double* pt = vtkPoints1->GetPoint(i);
+
+		trans->push_back(pcl::PointXYZRGB(pt[0], pt[1], pt[2], 100, 100, int(pt[2]) % 256));
+
+		cout << pt[2] << endl;
+	}
+	for (vtkIdType i = 0; i < vtkPoints2->GetNumberOfPoints(); i++)
+	{
+		double* pt1 = vtkPoints2->GetPoint(i);
+
+		trans->push_back(pcl::PointXYZRGB(pt1[0], pt1[1], pt1[2], 100, 100, int(pt1[2]) % 256));
+		cout << pt1[2] << endl;
+	}
+
+	return trans;
+}
+
+std::string rand_str(const int len)  /*参数为字符串的长度*/
+{
+	/*初始化*/
+	std::string str;                 /*声明用来保存随机字符串的str*/
+	char c;                     /*声明字符c，用来保存随机生成的字符*/
+	int idx;                    /*用来循环的变量*/
+	/*循环向字符串中添加随机生成的字符*/
+	for (idx = 0; idx < len; idx++)
+	{
+		/*rand()%26是取余，余数为0~25加上'a',就是字母a~z,详见asc码表*/
+		c = 'a' + rand() % 26;
+		str.push_back(c);       /*push_back()是string类尾插函数。这里插入随机字符c*/
+	}
+	return str;                 /*返回生成的随机字符串*/
+}
+
+
+using PointT = pcl::PointXYZ;
+using PointCloudT = pcl::PointCloud<PointT>;
+
+// 用于将参数传递给回调函数的结构体
+struct CallbackArgs {
+	PointCloudT::Ptr clicked_points_3d;
+	pcl::visualization::PCLVisualizer::Ptr viewerPtr;
+};
+
+void pickPointCallback(const pcl::visualization::PointPickingEvent& event, void* args) {
+	CallbackArgs* data = (CallbackArgs*)args;
+	if (event.getPointIndex() == -1)
+		return;
+	PointT current_point;
+	event.getPoint(current_point.x, current_point.y, current_point.z);
+	data->clicked_points_3d->points.push_back(current_point);
+
+	// 绘制红色点
+	int j;
+	pcl::visualization::PointCloudColorHandlerCustom<PointT> red(data->clicked_points_3d, 255, 0, 0);
+	data->viewerPtr->removePointCloud("clicked_points");
+	data->viewerPtr->addPointCloud(data->clicked_points_3d, red, "clicked_points");
+	for (int i = 0; i < normals->size(); i++)
+	{
+
+		j = i;
+		Eigen::Vector3f V1;
+		V1 << current_point.x - filtered_cloud->points[i].x, current_point.y - filtered_cloud->points[i].y, current_point.z - filtered_cloud->points[i].z;
+		Eigen::Vector3f V2;
+		V2 << normals->points[i].normal_x, normals->points[i].normal_y, normals->points[i].normal_z;
+
+
+		double angle = pcl::getAngle3D(V1, V2, true);
+		double dis = sqrt(pow(current_point.x - filtered_cloud->points[i].x, 2) + pow(current_point.y - filtered_cloud->points[i].y, 2) + pow(current_point.z - filtered_cloud->points[i].z, 2));
+		if (angle < 25 && dis < 50)
+		{
+			cout << angle << "    " << dis << endl;
+			data->viewerPtr->addLine(current_point, filtered_cloud->points[i], angle, 0, 0, rand_str(int(angle)));
+			while (path[j] != -1)
+			{
+
+				data->viewerPtr->addLine(filtered_cloud->points[j], filtered_cloud->points[path[j]], 0, angle, 0, rand_str(int(angle) + 5));
+				j = path[j];
+
+			}
+
+
+
+			double vea = sqrt(pow(filtered_cloud->points[path[i]].x - filtered_cloud->points[i].x, 2) + pow(filtered_cloud->points[path[i]].y - filtered_cloud->points[i].y, 2) + pow(filtered_cloud->points[path[i]].z - filtered_cloud->points[i].z, 2));
+			Eigen::Vector3d v1(normals->points[i].normal_x, normals->points[i].normal_y, normals->points[i].normal_z);
+			Eigen::Vector3d v2((filtered_cloud->points[path[i]].x - filtered_cloud->points[i].x) / vea, (filtered_cloud->points[path[i]].y - filtered_cloud->points[i].y) / vea, (filtered_cloud->points[path[i]].z - filtered_cloud->points[i].z) / vea);
+
+			// 计算法向量
+			Eigen::Vector3d n = v1.cross(v2);
+
+			// 归一化法向量
+			n.normalize();
+
+			double Coronal[16] = {
+								  normals->points[i].normal_x, normals->points[i].normal_y, normals->points[i].normal_z, 0,
+								  n.x(), n.y() ,n.z(), 0,
+								  (filtered_cloud->points[path[i]].x - filtered_cloud->points[i].x) / vea, (filtered_cloud->points[path[i]].y - filtered_cloud->points[i].y) / vea, (filtered_cloud->points[path[i]].z - filtered_cloud->points[i].z) / vea, 0,
+								  0, 0, 0, 1 };
+			double center[3];
+			center[0] = filtered_cloud->points[i].x;
+			center[1] = filtered_cloud->points[i].y;
+			center[2] = filtered_cloud->points[i].z;
+			initImageActor(Coronal, center, dis);
+			break;
+
+		}
+	}
+	data->viewerPtr->setPointCloudRenderingProperties(pcl::visualization::PCL_VISUALIZER_POINT_SIZE, 10,
+		"clicked_points");
+	std::cout << current_point.x << " " << current_point.y << " " << current_point.z << std::endl;
+}
+
+
+VTK_MODULE_INIT(vtkRenderingOpenGL2);
+VTK_MODULE_INIT(vtkInteractionStyle);
+int main()
+{
+
+	reader->SetFileName("J:/eus/amos22 2/amos22/labelsVa/amos_0545.nii.gz");
+	reader1->SetFileName("J:/eus/amos22 2/amos22/imagesVa/amos_0545.nii.gz");
+	reader->Update();
+	reader1->Update();
+
+	vtkSmartPointer<vtkMarchingCubes> skinExtractor =
+		vtkSmartPointer<vtkMarchingCubes>::New();
+	skinExtractor->SetInputConnection(reader->GetOutputPort());
+
+
+
+	//vtkSmartPointer<vtkPolyDataConnectivityFilter> cf = vtkSmartPointer<vtkPolyDataConnectivityFilter>::New();
+	//cf->SetInputData(skinExtractor->GetOutput());
+	//cf->SetExtractionModeToSpecifiedRegions();
+	//cf->AddSpecifiedRegion(1); // keep only the largest connected region
+	//cf->Update(); 
+
+	vtkSmartPointer<vtkMarchingCubes> skinExtractor1 =
+		vtkSmartPointer<vtkMarchingCubes>::New();
+	skinExtractor1->SetInputConnection(reader->GetOutputPort());
+
+	vtkSmartPointer<vtkMarchingCubes> skinExtractor2 =
+		vtkSmartPointer<vtkMarchingCubes>::New();
+	skinExtractor2->SetInputConnection(reader->GetOutputPort());
+
+	vtkSmartPointer<vtkMarchingCubes> skinExtractor3 =
+		vtkSmartPointer<vtkMarchingCubes>::New();
+	skinExtractor3->SetInputConnection(reader->GetOutputPort());
+
+
+
+
+	pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud1(new pcl::PointCloud<pcl::PointXYZRGB>);
+	skinExtractor1->SetValue(0, 12.9);
+	skinExtractor1->Update();
+	skinExtractor->SetValue(0, 12.01);
+	skinExtractor->Update();
+	skinExtractor2->SetValue(0, 7.01);
+	skinExtractor2->Update();
+	skinExtractor3->SetValue(0, 7);
+	skinExtractor3->Update();
+	cloud = vtkPointsToPcl(RemoveDuplicates(skinExtractor1->GetOutput()->GetPoints(), skinExtractor->GetOutput()->GetPoints()), RemoveDuplicates(skinExtractor2->GetOutput()->GetPoints(), skinExtractor3->GetOutput()->GetPoints()));
+	skinExtractor1->SetValue(0, 8.01);
+	skinExtractor1->Update();
+	skinExtractor->SetValue(0, 8);
+	skinExtractor->Update();
+	skinExtractor2->SetValue(0, 9.01);
+	skinExtractor2->Update();
+	skinExtractor3->SetValue(0, 9);
+	skinExtractor3->Update();
+	cloud1 = vtkPointsToPcl(RemoveDuplicates(skinExtractor1->GetOutput()->GetPoints(), skinExtractor->GetOutput()->GetPoints()), RemoveDuplicates(skinExtractor2->GetOutput()->GetPoints(), skinExtractor3->GetOutput()->GetPoints()));
+	/*滤波部分*/
+	pcl::VoxelGrid<pcl::PointXYZRGB> sor;
+	sor.setInputCloud(cloud);
+	// 设置体素格子的大小，为输入点云尺寸的一半
+	sor.setLeafSize(5, 5, 5);
+
+	// 应用体素格子滤波器
+	pcl::PointCloud<pcl::PointXYZRGB>::Ptr filtered_cloudA(new pcl::PointCloud<pcl::PointXYZRGB>);
+	pcl::PointCloud<pcl::PointXYZRGB>::Ptr center_cloud(new pcl::PointCloud<pcl::PointXYZRGB>);
+	sor.filter(*filtered_cloudA);
+
+	pcl::visualization::PCLVisualizer::Ptr viewer(new pcl::visualization::PCLVisualizer("viewer"));
+	filtered_cloud = filtered_cloudA;
+
+	pcl::NormalEstimation<pcl::PointXYZRGB, pcl::Normal> normal_estimator;
+	normal_estimator.setInputCloud(filtered_cloud);
+	pcl::search::KdTree<pcl::PointXYZRGB>::Ptr tree(new pcl::search::KdTree<pcl::PointXYZRGB>);
+	normal_estimator.setSearchMethod(tree);
+	normal_estimator.setKSearch(10); // 设置法向量搜索个数
+	normal_estimator.setViewPoint(300, 300, 300);
+	normal_estimator.compute(*normals);
+	// 进行平面分割
+
+
+	pcl::RegionGrowingRGB<pcl::PointXYZRGB, pcl::Normal> reg;
+	reg.setInputCloud(filtered_cloud);
+	reg.setInputNormals(normals);
+	reg.setSearchMethod(tree);
+	reg.setPointColorThreshold(0.3);
+	reg.setRegionColorThreshold(0.3);
+	reg.setMinClusterSize(10);
+
+	// 执行聚类算法
+	std::vector<pcl::PointIndices> clusters;
+	std::vector<pcl::PointIndices> edge_clusters;
+	reg.extract(clusters);
+
+	// 将聚类结果染色显示
+
+	cout << clusters.size() << endl;
+	for (int i = 0; i < clusters.size(); ++i)
+	{
+		pcl::PointXYZRGB color;
+		int k = 0;
+		color.x = 0;
+		color.y = 0;
+		color.z = 0;
+		color.r = rand() % 256;
+		color.g = rand() % 256;
+		color.b = rand() % 256;
+		pcl::PointCloud<pcl::PointXYZ>::Ptr edge_cloud(new pcl::PointCloud<pcl::PointXYZ>);
+		for (int j = 0; j < clusters[i].indices.size(); ++j)
+		{
+
+			filtered_cloud->points[clusters[i].indices[j]].r = color.r;
+			filtered_cloud->points[clusters[i].indices[j]].g = color.g;
+			filtered_cloud->points[clusters[i].indices[j]].b = color.b;
+			color.x += filtered_cloud->points[clusters[i].indices[j]].x;
+			color.y += filtered_cloud->points[clusters[i].indices[j]].y;
+			color.z += filtered_cloud->points[clusters[i].indices[j]].z;
+			edge_cloud->push_back(pcl::PointXYZ(cloud->points[clusters[i].indices[j]].x, cloud->points[clusters[i].indices[j]].y, cloud->points[clusters[i].indices[j]].z));
+			//if (j > 0)
+			//{
+				//cout << cloud->points[clusters[i].indices[j]].x - cloud->points[clusters[i].indices[j - 1]].x << "	" << cloud->points[clusters[i].indices[j]].y - cloud->points[clusters[i].indices[j - 1]].y <<"     " << cloud->points[clusters[i].indices[j]].z - cloud->points[clusters[i].indices[j - 1]].z << endl;
+				//float a = cloud->points[clusters[i].indices[j]].x - cloud->points[clusters[i].indices[j - 1]].x;
+				//float b = cloud->points[clusters[i].indices[j]].y - cloud->points[clusters[i].indices[j - 1]].y;
+				//float c = cloud->points[clusters[i].indices[j]].z - cloud->points[clusters[i].indices[j - 1]].z;
+				/*if (a < -0.7 && c == 0)
+				{*/
+				//cloud->points[clusters[i].indices[j]].r = 255;
+				//cloud->points[clusters[i].indices[j]].g = 100;
+				//cloud->points[clusters[i].indices[j]].b = 100;
+				//cloud->points[clusters[i].indices[j-1]].r = 255;
+				//cloud->points[clusters[i].indices[j-1]].g = 100;
+				//cloud->points[clusters[i].indices[j-1]].b = 100;
+				//color.x += cloud->points[clusters[i].indices[j]].x;
+				//color.y += cloud->points[clusters[i].indices[j]].y;
+				//color.z += cloud->points[clusters[i].indices[j]].z;
+				//color.x += cloud->points[clusters[i].indices[j-1]].x;
+				//color.y += cloud->points[clusters[i].indices[j-1]].y;
+				//color.z += cloud->points[clusters[i].indices[j-1]].z;
+				//k++;
+				//edge_clusters[i].indices.push_back(k);
+				//k++;
+				//edge_cloud->push_back(pcl::PointXYZ(cloud->points[clusters[i].indices[j-1]].x, cloud->points[clusters[i].indices[j-1]].y, cloud->points[clusters[i].indices[j-1]].z));
+				//edge_clusters[i].indices.push_back(k);
+				//k++;
+			//}
+		//}
+		//edge_cloud->push_back(pcl::PointXYZ(cloud->points[clusters[i].indices[j]].x, cloud->points[clusters[i].indices[j]].y, cloud->points[clusters[i].indices[j]].z));
+		}
+		color.x = color.x / (clusters[i].indices.size());
+		color.y = color.y / (clusters[i].indices.size());
+		color.z = color.z / (clusters[i].indices.size());
+		cout << edge_cloud->size() << endl << clusters[i].indices.size();
+
+		// 创建 KDTree 对象
+		pcl::KdTree<pcl::PointXYZ>::Ptr kdtreeA(new pcl::KdTreeFLANN<pcl::PointXYZ>);
+		kdtreeA->setInputCloud(edge_cloud);
+
+		// 定义最小二乘方程的系数矩阵和常数矩阵
+		Eigen::MatrixXd A(edge_cloud->size(), 3);
+		Eigen::VectorXd b(edge_cloud->size());
+
+		// 填充系数矩阵和常数矩阵
+		for (int i = 0; i < edge_cloud->size(); ++i)
+		{
+			A(i, 0) = edge_cloud->points[i].x - color.x;
+			A(i, 1) = edge_cloud->points[i].y - color.y;
+			A(i, 2) = edge_cloud->points[i].z - color.z;
+			b(i) = sqrt(std::pow(edge_cloud->points[i].x - color.x, 2) +
+				std::pow(edge_cloud->points[i].y - color.y, 2) +
+				std::pow(edge_cloud->points[i].z - color.z, 2));
+		}
+
+		// 使用最小二乘法求解目标点的位置
+		Eigen::Vector3d x = A.bdcSvd(Eigen::ComputeThinU | Eigen::ComputeThinV).solve(b);
+
+		center_cloud->push_back(pcl::PointXYZRGB(color.x + -6 * x[0], color.y + -6 * x[1], color.z + x[2], 255, 255, 255));
+		color.x = color.x - 6 * x[0];
+		color.y = color.y - 6 * x[1];
+		color.z = color.z - x[2];
+		for (int k = 0; k < clusters[i].indices.size(); ++k)
+		{
+
+			double ditx = filtered_cloud->points[clusters[i].indices[k]].x - color.x;
+			double dity = filtered_cloud->points[clusters[i].indices[k]].y - color.y;
+			double ditz = filtered_cloud->points[clusters[i].indices[k]].z - color.z;
+			if (ditx / abs(ditx) != normals->points[clusters[i].indices[k]].normal_x / abs(normals->points[clusters[i].indices[k]].normal_x)
+				&& dity / abs(dity) != normals->points[clusters[i].indices[k]].normal_y / abs(normals->points[clusters[i].indices[k]].normal_y)
+				&& ditz / abs(ditz) != normals->points[clusters[i].indices[k]].normal_z / abs(normals->points[clusters[i].indices[k]].normal_z))
+			{
+				cout << i << "  " << k << "  " << ditx << "    " << dity << "    " << ditz << "    ";
+				cout << i << "  " << k << "   " << normals->points[clusters[i].indices[k]].normal_x << normals->points[clusters[i].indices[k]].normal_y << "   " << normals->points[clusters[i].indices[k]].normal_z << endl;
+
+				normals->points[clusters[i].indices[k]].normal_x = -1 * normals->points[clusters[i].indices[k]].normal_x;
+				normals->points[clusters[i].indices[k]].normal_y = -1 * normals->points[clusters[i].indices[k]].normal_y;
+				normals->points[clusters[i].indices[k]].normal_z = -1 * normals->points[clusters[i].indices[k]].normal_z;
+			}
+			else if (abs(ditz) > abs(ditx) && abs(ditz) > abs(dity) && ditz / abs(ditz) != normals->points[clusters[i].indices[k]].normal_z / abs(normals->points[clusters[i].indices[k]].normal_z))
+			{
+				cout << "second sort :" << i << "  " << k << "  " << ditx << "    " << dity << "    " << ditz << "    ";
+				cout << i << "  " << k << "   " << normals->points[clusters[i].indices[k]].normal_x << normals->points[clusters[i].indices[k]].normal_y << "   " << normals->points[clusters[i].indices[k]].normal_z << endl;
+				normals->points[clusters[i].indices[k]].normal_x = -1 * normals->points[clusters[i].indices[k]].normal_x;
+				normals->points[clusters[i].indices[k]].normal_y = -1 * normals->points[clusters[i].indices[k]].normal_y;
+				normals->points[clusters[i].indices[k]].normal_z = -1 * normals->points[clusters[i].indices[k]].normal_z;
+			}
+			else if (abs(ditx) > abs(ditz) && abs(ditx) > abs(dity) && ditx / abs(ditx) != normals->points[clusters[i].indices[k]].normal_x / abs(normals->points[clusters[i].indices[k]].normal_x))
+			{
+				cout << "therd sort :" << i << "  " << k << "  " << ditx << "    " << dity << "    " << ditz << "    ";
+				cout << i << "  " << k << "   " << normals->points[clusters[i].indices[k]].normal_x << normals->points[clusters[i].indices[k]].normal_y << "   " << normals->points[clusters[i].indices[k]].normal_z << endl;
+				normals->points[clusters[i].indices[k]].normal_x = -1 * normals->points[clusters[i].indices[k]].normal_x;
+				normals->points[clusters[i].indices[k]].normal_y = -1 * normals->points[clusters[i].indices[k]].normal_y;
+				normals->points[clusters[i].indices[k]].normal_z = -1 * normals->points[clusters[i].indices[k]].normal_z;
+			}
+			else if (abs(dity) > abs(ditz) && abs(dity) > abs(ditx) && dity / abs(dity) != normals->points[clusters[i].indices[k]].normal_y / abs(normals->points[clusters[i].indices[k]].normal_y))
+			{
+				cout << "last sort :" << i << "  " << k << "  " << ditx << "    " << dity << "    " << ditz << "    ";
+				cout << i << "  " << k << "   " << normals->points[clusters[i].indices[k]].normal_x << normals->points[clusters[i].indices[k]].normal_y << "   " << normals->points[clusters[i].indices[k]].normal_z << endl;
+				normals->points[clusters[i].indices[k]].normal_x = -1 * normals->points[clusters[i].indices[k]].normal_x;
+				normals->points[clusters[i].indices[k]].normal_y = -1 * normals->points[clusters[i].indices[k]].normal_y;
+				normals->points[clusters[i].indices[k]].normal_z = -1 * normals->points[clusters[i].indices[k]].normal_z;
+			}
+		}
+
+	}
+
+	cout << filtered_cloud->size() << endl << center_cloud->size();
+
+
+
+
+
+
+
+	// //Normal estimation*
+	//pcl::NormalEstimation<pcl::PointXYZ, pcl::Normal> n;//设置法线估计对象
+	//pcl::PointCloud<pcl::Normal>::Ptr normals1(new pcl::PointCloud<pcl::Normal>);//存储估计的法线
+	//pcl::search::KdTree<pcl::PointXYZ>::Ptr tree1(new pcl::search::KdTree<pcl::PointXYZ>);//定义kd树指针
+	//tree1->setInputCloud(filtered_cloud);//用cloud构造tree对象
+	//n.setInputCloud(filtered_cloud);//为法线估计对象设置输入点云
+	//n.setSearchMethod(tree1);//设置搜索方法
+	//n.setKSearch(5);//设置k邻域搜素的搜索范围
+	//n.compute(*normals1);//估计法线
+	////* normals should not contain the point normals + surface curvatures
+	//// Concatenate the XYZ and normal fields*
+	//pcl::PointCloud<pcl::PointNormal>::Ptr cloud_with_normals(new pcl::PointCloud<pcl::PointNormal>);//
+	//pcl::concatenateFields(*filtered_cloud, *normals1, *cloud_with_normals);//连接字段，cloud_with_normals存储有向点云
+	////* cloud_with_normals = cloud + normals
+	//// Create search tree*
+	//pcl::search::KdTree<pcl::PointNormal>::Ptr tree2(new pcl::search::KdTree<pcl::PointNormal>);//定义搜索树对象
+	//tree2->setInputCloud(cloud_with_normals);//利用有向点云构造tree
+	//pcl::GreedyProjectionTriangulation<pcl::PointNormal> gp3;//定义三角化对象
+	//pcl::PolygonMesh triangles;//存储最终三角化的网络模型
+	//// Set the maximum distance between connected points (maximum edge length)
+	//gp3.setSearchRadius(18);         //设置搜索半径radius，来确定三角化时k一邻近的球半径。
+	//// Set typical values for the parameters
+	//gp3.setMu(12);                     //设置样本点到最近邻域距离的乘积系数 mu 来获得每个样本点的最大搜索距离，这样使得算法自适应点云密度的变化
+	//gp3.setMaximumNearestNeighbors(10);//设置样本点最多可以搜索的邻域数目100 。
+	//gp3.setMaximumSurfaceAngle(M_PI / 4);  //45 degrees，设置连接时的最大角度 eps_angle ，当某点法线相对于采样点的法线偏离角度超过该最大角度时，连接时就不考虑该点。
+	//gp3.setMinimumAngle(M_PI / 36);        //10 degrees，设置三角化后三角形的最小角，参数 minimum_angle 为最小角的值。
+	//gp3.setMaximumAngle( M_PI );       //120 degrees，设置三角化后三角形的最大角，参数 maximum_angle 为最大角的值。
+	//gp3.setNormalConsistency(false);     //设置一个标志 consistent ，来保证法线朝向一致，如果设置为 true 则会使得算法保持法线方向一致，如果为 false 算法则不会进行法线一致性检查。
+	//// Get result
+	//gp3.setInputCloud(cloud_with_normals);//设置输入点云为有向点云
+	//gp3.setSearchMethod(tree2);           //设置搜索方式tree2
+	//gp3.reconstruct(triangles);           //重建提取三角化
+
+
+	AMGraph G;
+	putin(filtered_cloud, G);
+	Dijkstra(G, 1387);
+
+
+	cout << endl << normals->size() << "    " << filtered_cloud->size();
+	/*点击取点部分*/
+	CallbackArgs  cb_args;
+	PointCloudT::Ptr clicked_points_3d(new PointCloudT);
+	cb_args.clicked_points_3d = clicked_points_3d;
+	cb_args.viewerPtr = pcl::visualization::PCLVisualizer::Ptr(viewer);
+	viewer->registerPointPickingCallback(pickPointCallback, (void*)&cb_args);
+	//viewer->addPolygonMesh(triangles);
+
+	viewer->setBackgroundColor(0.0, 0.0, 0.0);
+	//pcl::visualization::PointCloudColorHandlerCustom<pcl::PointXYZ> single_color(filtered_cloud, 0, 255, 0);
+	viewer->addPointCloud<pcl::PointXYZRGB>(filtered_cloud, "sample cloud");
+	viewer->addPointCloud<pcl::PointXYZRGB>(center_cloud, "sample cloud1");
+	//viewer->addPointCloud<pcl::PointXYZRGB>(cloud1, "sample cloud2");
+	viewer->addPointCloudNormals<pcl::PointXYZRGB, pcl::Normal>(filtered_cloud, normals, 1, 3, "normals");
+	//viewer->addPointCloud<pcl::PointXYZ>(edge_cloud, "sample cloud1");
+	viewer->setPointCloudRenderingProperties(pcl::visualization::PCL_VISUALIZER_POINT_SIZE, 3, "sample cloud");
+	/*viewer.setPointCloudRenderingProperties(pcl::visualization::PCL_VISUALIZER_POINT_SIZE, 1, "sample cloud1");*/
+	viewer->addCoordinateSystem(1.0);
+	viewer->initCameraParameters();
+	viewer->spin();
+
+
+	while (!viewer->wasStopped())
+	{
+		viewer->spinOnce(100);
+		std::this_thread::sleep_for(std::chrono::milliseconds(100));
+	}
+
+	//vtkSmartPointer<vtkPolyDataConnectivityFilter> cf1 = vtkSmartPointer<vtkPolyDataConnectivityFilter>::New();
+	//cf1->SetInputData(skinExtractor1->GetOutput());
+	//cf1->SetExtractionModeToSpecifiedRegions();
+	//cf1->AddSpecifiedRegion(1); // keep only the largest connected region
+	//cf1->Update();
+
+
+
+
+	// 计算多边形数据集的布尔操作结果
+	//vtkSmartPointer<vtkBooleanOperationPolyDataFilter> booleanFilter = vtkSmartPointer<vtkBooleanOperationPolyDataFilter>::New();
+	//booleanFilter->SetInputConnection(0, deci->GetOutputPort());
+	//booleanFilter->SetInputConnection(1, deci1->GetOutputPort());
+	//booleanFilter->SetOperationToIntersection(); // 取三个数据集的交集
+	//booleanFilter->Update();
+
+
+
+	vtkSmartPointer<vtkDecimatePro> deci = vtkDecimatePro::New(); //减少数据读取点，以牺牲数据量加速交互
+	deci->SetTargetReduction(0.3);
+	deci->SetInputConnection(skinExtractor1->GetOutputPort());
+	deci->Print(std::cout);
+	vtkSmartPointer<vtkSmoothPolyDataFilter>  smooth = vtkSmoothPolyDataFilter::New();  //使图像更加光滑
+	smooth->SetInputConnection(deci->GetOutputPort());
+	smooth->SetNumberOfIterations(1500);  //迭代次数
+	//求法线
+	vtkSmartPointer<vtkPolyDataNormals>  skinNormals = vtkPolyDataNormals::New();
+	skinNormals->SetInputConnection(smooth->GetOutputPort());
+	skinNormals->SetFeatureAngle(180);
+	//将提取的等值面拼接成连续的
+	vtkSmartPointer<vtkStripper> vesselStripper = vtkStripper::New();
+	vesselStripper->SetInputConnection(skinNormals->GetOutputPort());
+	vtkSmartPointer<vtkPolyDataMapper> skinMapper =
+		vtkSmartPointer<vtkPolyDataMapper>::New();
+	skinMapper->SetInputConnection(vesselStripper->GetOutputPort());
+	skinMapper->ScalarVisibilityOff();
+	skinMapper->Print(std::cout);
+	vtkSmartPointer<vtkActor> skin =
+		vtkSmartPointer<vtkActor>::New();
+	skin->SetMapper(skinMapper);
+	skin->GetProperty()->SetDiffuseColor(1, .49, .25);
+	vtkSmartPointer<vtkProperty> backProp =
+		vtkSmartPointer<vtkProperty>::New();
+	backProp->SetDiffuseColor(0.8900, 0.8100, 0.3400);
+	skin->SetBackfaceProperty(backProp);
+	//创建数据的初始视图很方便。的FocalPoint而位置构成一个矢量方向。稍后(ResetCamera()方法)
+	//这个矢量是用来定位摄像机来查看数据的
+	//这个方向。
+	vtkSmartPointer<vtkRenderer> aRenderer =
+		vtkSmartPointer<vtkRenderer>::New();
+	vtkSmartPointer<vtkRenderWindow> renWin =
+		vtkSmartPointer<vtkRenderWindow>::New();
+	renWin->AddRenderer(aRenderer);
+	vtkSmartPointer<vtkRenderWindowInteractor> iren =
+		vtkSmartPointer<vtkRenderWindowInteractor>::New();
+	iren->SetRenderWindow(renWin);
+	aRenderer->AddActor(skin);
+	aRenderer->AddActor(reslice);
+	//aRenderer->AddActor(getVTKActor(RevtkData));
+	aRenderer->ResetCamera();
+	aRenderer->SetBackground(.2, .3, .4);
+	renWin->SetSize(640, 480);
+	aRenderer->ResetCameraClippingRange();
+	renWin->Render();
+	iren->Initialize();
+	iren->Start();
+	return EXIT_SUCCESS;
+}
+
+
